@@ -4,6 +4,8 @@ import re
 import nltk
 from nltk.tokenize import sent_tokenize, word_tokenize
 import xml.etree.ElementTree as ET
+import requests
+import zipfile
 
 lines = list()
 metadata = dict()
@@ -29,6 +31,20 @@ def readFile( file ):
         except:
             print( "Cannot read " + file + " !" )
 
+
+def download_corpus(url, username, password):
+    """Downloads the corpus data from the given URL"""
+
+    r = requests.get(url, auth=(username, password))
+
+    if r.status_code == 200:
+        with open("corpus.zip", 'wb') as fd:
+            for chunk in r.iter_content(chunk_size=128):
+                fd.write(chunk)
+
+    # Unzip the corpus file to the corpus directory
+    with zipfile.ZipFile("corpus.zip") as corpus_zip:
+        corpus_zip.extractall("corpus")
 
 
 def concordance( book , searchTerm , window ):
