@@ -6,11 +6,16 @@ from nltk.tokenize import sent_tokenize, word_tokenize
 import xml.etree.ElementTree as ET
 import requests
 import zipfile
+import math
+import os
+from os.path import isfile, join , isdir
+import string
 
 lines = list()
 metadata = dict()
 currentBook = ''
 mfw = list()
+freqText = dict()
 
 
 def readFile( file ):
@@ -60,18 +65,15 @@ def concordance( book , searchTerm , window ):
 
     for line in lines:
         line = line.strip()
-        #print( line )
+
         if re.search( regex , line , re.IGNORECASE ):
             extract = ''
-            #print(line + '/n' )
+
             position = re.search( regex , line , re.IGNORECASE ).start()
-            #print( position )
             start = position - len( searchTerm ) - window ;
             fragmentLength = start + 2 * window  + len( searchTerm )
             if fragmentLength > len( line ):
                 fragmentLength = len( line )
-            #print( start )
-            #print( fragmentLength )
 
             if start < 0:
 
@@ -82,7 +84,6 @@ def concordance( book , searchTerm , window ):
                     i += 1
                 extract = whiteSpace + line[ 0 : fragmentLength ]
             else:
-                #extract = line
                 extract = line[ start : fragmentLength ]
 
             print( extract )
@@ -92,19 +93,29 @@ def concordance( book , searchTerm , window ):
 
 
 
-def collocationAnalysis( book , searchTerm , distance ):
+def removeStopwords( wordsDict ):
+
+    mfw = []
+    wordsDict2 = dict()
+
+    try:
+        mfwFile = open( 'mfw.txt' )
+        for word in mfwFile:
+            mfw.append( word.strip() )
+    except:
+        print("Cannot read the list of stopwords!")
+
+    for w in wordsDict:
+        if not( w in mfw ):
+            wordsDict2[w] = wordsDict[w]
+
+    return wordsDict2
+
+
+def collocation( book , searchTerm , distance ):
 
     global lines
     global currentBook
-    global mfw
-
-    if len(mfw) == 0:
-        try:
-            mfwFile = open( 'mfw.txt' )
-            for word in mfwFile:
-                mfw.append( word.strip() )
-        except:
-            print("Cannot read the list of stopwords!")
 
     if book != currentBook:
         readFile(book)
@@ -114,23 +125,94 @@ def collocationAnalysis( book , searchTerm , distance ):
 
     paragraph = ''
 
+    parLength = 0
+
     for line in lines:
         line = line.strip()
-        if re.search( '\w' , line):
+        if parLength < 100:
+            parLength += len(line)
             paragraph += line + ' '
         else:
+            parLength = 0
             words = tokenise( paragraph )
             i = 0
             for w in words:
                 if re.search( regex , w , re.IGNORECASE ):
+
                     for x in range( i - distance , i + distance ):
                         if x >= 0 and x < len(words) and searchTerm != words[x]:
-                            if len(words[x]) > 0 and words[x] not in mfw:
+                            if len(words[x]) > 0:
                                 freq[ words[x] ] = freq.get( words[x] , 0 ) + 1
 
-            i += 1
+                i += 1
             paragraph = ''
     return freq
+
+
+
+def collocationPos( book , searchTerm , distance, posFilter ):
+
+    ns = {'t': 'http://www.tei-c.org/ns/1.0' }
+
+    freq = dict()
+
+    regex = r"\b" + searchTerm.lower() + r"\b"
+    wordsDict = dict()
+    index = 0
+
+    tree = ET.parse(book)
+    root = tree.getroot()
+
+    pars = root.findall('t:text/t:p' , ns )
+    for p in pars:
+        sent = p.findall('t:s' , ns )
+        for s in sent:
+            words = s.findall('t:w' , ns )
+            for w in words:
+                lemma = ''
+                pos = ''
+                if 'lemma' in w.attrib:
+                    lemma = w.attrib['lemma']
+                if 'pos' in w.attrib:
+                    pos = w.attrib['pos']
+                if re.search( '\w' , lemma ):
+                    wordsDict[index] = ( lemma, pos )
+                    index += 1
+
+
+    for index in wordsDict:
+        if re.search( regex , wordsDict[index][0] , re.IGNORECASE ):
+            for x in range( index - distance , index + distance ):
+                if x >= 0 and x < len(wordsDict) and searchTerm != wordsDict[index][0]:
+                    if len( wordsDict[x][0] ) > 0 and re.search( posFilter , wordsDict[x][1] , re.IGNORECASE ):
+                        freq[ wordsDict[x][0].lower() ] = freq.get( wordsDict[x][0].lower() , 0 ) + 1
+
+    return freq
+
+
+
+
+def getWordsByPosTag( book , posFilter ):
+
+    ns = {'t': 'http://www.tei-c.org/ns/1.0' }
+
+    wordsList = dict()
+
+    tree = ET.parse(book)
+    root = tree.getroot()
+
+    pars = root.findall('t:text/t:p' , ns )
+    for p in pars:
+        sent = p.findall('t:s' , ns )
+        for s in sent:
+            words = s.findall('t:w' , ns )
+            for w in words:
+                if 'pos' in w.attrib:
+                    if re.search( posFilter , w.attrib['pos'] ):
+                        wordsList[ w.text ] = wordsList.get( w.text , 0 ) + 1
+
+    return wordsList
+
 
 
 
@@ -163,52 +245,77 @@ def fleschKincaid():
 
 def sentimentAnalysis( book ):
 
-
     count = dict()
+    ns = {'t': 'http://www.tei-c.org/ns/1.0' }
+
+    wordsList = dict()
+
     tree = ET.parse(book)
     root = tree.getroot()
 
-    for elem in root:
-        for subelem in elem:
-            count['all'] = count.get( 'all' , 0 ) + 1
-            #print(subelem.text)
-            attr = subelem.attrib
-            '''
-            if 'lemma' in subelem.attrib:
-                print( subelem.attrib['lemma'] )
-            if 'pos' in subelem.attrib:
-                print( subelem.attrib['pos'] )
-            '''
+    pars = root.findall('t:text/t:p' , ns )
+    for p in pars:
+        sent = p.findall('t:s' , ns )
+        for s in sent:
+            words = s.findall('t:w' , ns )
+            for w in words:
 
-            if 'ana' in subelem.attrib:
+                count['all'] = count.get( 'all' , 0 ) + 1
 
+                attr = w.attrib
+                if 'ana' in w.attrib:
 
-                if subelem.attrib['ana'] == '++':
-                    count['positive'] = count.get( 'positive' , 0 ) + 2
-                    print( subelem.text )
-                elif subelem.attrib['ana'] == '+':
-                    count['positive'] = count.get( 'positive' , 0 ) + 1
-                elif subelem.attrib['ana'] == '-':
-                    count['negative'] = count.get( 'positive' , 0 ) + 1
-                elif subelem.attrib['ana'] == '--':
-                    count['negative'] = count.get( 'positive' , 0 ) + 2
+                    if w.attrib['ana'] == '++':
+                        count['positive'] = count.get( 'positive' , 0 ) + 2
 
-                    #print( subelem.attrib['ana'] )
+                    elif w.attrib['ana'] == '+':
+                        count['positive'] = count.get( 'positive' , 0 ) + 1
+                    elif w.attrib['ana'] == '-':
+                        count['negative'] = count.get( 'positive' , 0 ) + 1
+                    elif w.attrib['ana'] == '--':
+                        count['negative'] = count.get( 'positive' , 0 ) + 2
 
 
-    '''
-    par = root.findall('p'  )
-
-
-    for word in par:
-        print( word.find('w' ).text )
-    '''
     return count
 
 
 
 
+def getPositiveWords( book ):
+    return getTaggedWords( book , '++' )
+
+def getNegativeWords( book ):
+    return getTaggedWords( book , '--' )
+
+def getTaggedWords( book , tag  ):
+
+
+    wordsList = dict()
+
+    ns = {'t': 'http://www.tei-c.org/ns/1.0' }
+
+    tree = ET.parse(book)
+    root = tree.getroot()
+
+    pars = root.findall('t:text/t:p' , ns )
+    for p in pars:
+        sent = p.findall('t:s' , ns )
+        for s in sent:
+            words = s.findall('t:w' , ns )
+            for w in words:
+                if 'ana' in w.attrib:
+
+                    if w.attrib['ana'] == tag:
+                        wordsList[ w.text.lower() ] = wordsList.get( w.text.lower() , 0 ) + 1
+
+
+    return sorted( wordsList )
+
+
+
 def showTitle( book ):
+    book = re.sub( '\.xml$' , '' , book )
+    book = re.sub( '\.txt$' , '' , book )
     global metadata
     if len(metadata) == 0:
         md = open( 'metadata.csv' )
@@ -219,63 +326,54 @@ def showTitle( book ):
                 if re.search( '\d' , values[1] ):
                     metadata[ values[0] ] += ' ({})'.format( values[1].strip() )
 
-    if re.search( '[.]txt$' , book ):
-        book = re.sub( '[.]txt$' , '' , book  )
-
-    metadata[ book ] = re.sub( r'[\],' , ',' , metadata[ book ] )
-
+    metadata[ book ] = metadata[ book ].replace('\\', " ")
     return metadata[ book ]
 
 
 
 
+def countLexiconWords( book , file ):
 
 
-def countOccurrencesWords( listOfWords ):
+    lexicon = open( file , encoding = 'utf-8')
+    listOfWords = []
 
-    freq = dict()
-    lowerCaseList = []
+    for line in lexicon:
+        line = line.strip()
+        listOfWords.append(line.lower() )
 
-    for item in listOfWords:
-        freq[item] = 0
-        lowerCaseList.append( item.lower() )
+    countOccurrences = 0
+
+    ns = {'t': 'http://www.tei-c.org/ns/1.0' }
+
+    tree = ET.parse(book)
+    root = tree.getroot()
+
+    pars = root.findall('t:text/t:p' , ns )
+    for p in pars:
+        sent = p.findall('t:s' , ns )
+        for s in sent:
+            words = s.findall('t:w' , ns )
+            for w in words:
+                if 'lemma' in w.attrib:
+                    if w.attrib['lemma'].lower() in listOfWords:
+                        countOccurrences += 1
+
+    return countOccurrences
 
 
-
-    for line in lines:
-        words = tokenise( line )
-        for w in words:
-            if w.lower() in lowerCaseList:
-                freq[ w.lower() ] = freq.get( w.lower() , 0 ) + 1
-
-    wordFreq = []
-    for w in listOfWords:
-        if w.lower() in freq:
-            wordFreq.append( freq[w.lower()] )
-        else:
-            wordFreq.append(0)
-
-    return wordFreq
 
 
 def calculateWordFrequencies( book ):
 
     global lines
     global currentBook
-    global mfw
 
-    if len(mfw) == 0:
-        try:
-            mfwFile = open( 'mfw.txt' )
-            for word in mfwFile:
-                mfw.append( word.strip() )
-        except:
-            print("Cannot read the list of stopwords!")
 
     if book != currentBook:
         readFile(book)
 
-    tokens = 0
+
     freq = dict()
 
     for line in lines:
@@ -293,24 +391,86 @@ def numberOfTypes( cap ):
     nrTypes =  len(freq)
     return ( nrTypes )
 
-def numberOfTokens():
+def numberOfTokens(  book ):
     nrTokens = 0
-    freq = calculateWordFrequencies( 0 )
+    freq = calculateWordFrequencies(  book )
     for w in freq:
         nrTokens += freq[w]
     return ( nrTokens )
 
-def numberOfSyllables():
-    nrSyllables = 0
-    freq = calculateWordFrequencies( 0 )
-    for w in freq:
-        nrSyllables += countSyllables(w) * freq[w]
-    return ( nrSyllables )
+def tdIdf( corpus , book ):
 
-def countSyllables( word ):
-    pattern = "e?[aiouy]+e*|e(?!d$|ly).|[td]ed|le\$|ble$"
-    syllables = re.findall( pattern , word )
-    return len(syllables)
+    global freqText
+    book = os.path.basename( book )
+
+    freq = dict()
+
+
+    txt = []
+
+    ## Formula is as follows: tf-idf= log⁡(⁡ N /df ),
+    # tf being the number of times a term appears in a document,
+    # N being the total number of documents
+    # df being the number of documents in which the term appears.
+
+    if len( freqText ) == 0:
+
+        fnames = os.listdir( corpus )
+        for i in fnames:
+            if re.search( '[.]txt$' , i):
+                txt.append( i )
+
+        ## N is total number of texts
+        N = len(txt)
+
+        for t in txt:
+            textWords = []
+            text = open( join( corpus , t ) , encoding = 'utf-8' )
+
+            for line in text:
+                words = tokenise( line )
+                for w in words:
+                    freq[w] = freq.get( w , 0 ) + 1
+                    freqText[ (t , w ) ] = freq.get( (t , w ) , 0 ) + 1
+
+
+        idf = dict()
+        ## df is number of texts in which the term appears
+
+        for word in freq:
+            df = 0
+
+            for text in txt:
+                if ( text , word ) in freqText:
+                    df += 1
+
+            idfW = math.log( N / df )
+            idf[ word ] = idfW
+
+            for text in txt:
+                if ( text , word ) in freqText:
+                    freqText[ ( text , word ) ] = 1 + freqText[ ( text , word ) ] * idf[ word ]
+
+        print( 'Done: Calculations made.' )
+
+
+    freqIdf = dict()
+    allWords = dict()
+
+    for w in freqText:
+        print(freqText[w][1])
+        allWords.appen( freqText[w][1] )
+
+    for w in allWords:
+        if( book , w ) in freqText:
+            freqIdf[w] = freqText[ ( book , w ) ]
+            i += 1
+            if i == max:
+                break
+
+    return freqIdf
+
+
 
 def countPosTag( posRe ):
     global posTags
